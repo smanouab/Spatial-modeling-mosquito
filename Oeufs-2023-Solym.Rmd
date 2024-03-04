@@ -1,0 +1,819 @@
+---
+title: "Eggs-study-2023"
+author: "Solym Manou-Abi"
+date: "2023-12-30"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Required packages
+
+```{r warning=FALSE, message=FALSE}
+source("Utilities.R")
+library(RColorBrewer)
+```
+
+## A faire
+
+1.  Modele spatio temporelle sur les donnees de dechet puis les ajouter aux donnees de pondoire
+
+**Idea:** Be able to merge waste data with the
+
+## Importing waste data
+
+### Public waste
+
+```{r}
+pn_path <- "./Data/Data-Analysis-Mosquito/Data-entomologique/Data-dechets/points_noirs.csv"
+output_path <- "./1. Egg_Resuls/CleanedData/"
+dir.create(output_path, showWarnings = FALSE)
+
+
+waste_data <- read.csv(pn_path, sep = ";") %>% 
+  rename(X = x, Y = y, Deep = Z.HAE.,  waste_type = type_signa, waste_number = nb_signa)
+## recodage des modalités de type waste dans waste_data_sf
+
+waste_data <-  waste_data%>% 
+  mutate(
+waste_type = case_when(waste_type == "caniveau bouche"~"clogged drain",
+                       waste_type == "carcasse voiture"~"vehicle scrap",
+                       waste_type == "dechets riviere mer"~"marine debris",
+                       waste_type == "depot sauvage"~"droppings",
+                       waste_type == "encombrants"~"solid waste",
+                       waste_type %in% c("flaque", "rejet eaux usees") ~ "sewage deposit",
+                       waste_type == "stock pneus"~"tire waste",
+                       waste_type == "abreuvoir"~"watering hole",
+                       TRUE ~ NA_character_
+           )
+)
+table(waste_data$waste_type)
+```
+
+```{r}
+log_lat <- dplyr::select(waste_data, X, Y)
+
+waste_data_xy <- waste_data %>% dplyr::select(X, Y)
+waste_data_sf <- st_as_sf(waste_data, coords = c("X", "Y"),
+                            crs= "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0")
+
+waste_data_sf <- st_transform(waste_data_sf, crs = st_crs(myt_map_commune))
+pn_coords <- st_coordinates(waste_data_sf) %>% data.frame()
+waste_data_sf <- bind_cols(waste_data_sf, st_coordinates(st_centroid(waste_data_sf$geometry)))
+
+
+intersections <- st_intersects(waste_data_sf$geometry, myt_map)
+waste_data_sf$commune <- myt_map$commune[as.integer(intersections)]
+waste_data$commune <- myt_map$commune[as.integer(intersections)]
+```
+
+```{r}
+map_of_wastes <- myt_map_commune %>% 
+  ggplot() + geom_sf() + geom_sf_text(aes(label = commune), size = 1.5) + 
+  geom_point(data = waste_data_sf %>% filter(!is.na(waste_type)), aes(X, Y, col = waste_type)) + 
+  xlab("Longitude") + ylab("Latitude") + theme_map()
+
+map_of_wastes$labels$colour <- "Waste types"
+map_of_wastes
+
+ggsave("./1. Egg_Resuls/map_of_wastes_type_myt.png", width = 7, height = 7)
+
+```
+
+As it is shown on the map, there are some communes that are not represented in the waste data. That can generate missing information in the merging with the egg data. One thing we can do is to aggregate the waste data (sum of signals) by commune and then perform the merging. That also has a drawback since data will be repeated daily for a given commune. That may not have an impact on the model we want to fit.
+
+The climate data does not have xy
+
+### Home waste
+
+```{r}
+home_waste <- readxl::read_excel("./3. Prospection_results/prospection_all.xlsx") %>% 
+  dplyr::select(Date, commune, village, X, Y, waste_type = Type_gite,
+                Gite_positif, Gite_negatif) %>% 
+  mutate(Year = year(Date), waste_number = Gite_positif + Gite_negatif) %>% 
+  dplyr::select(-Gite_positif, -Gite_negatif) %>% na.omit("waste_number")
+
+home_waste$Date[home_waste$Year == 2092] <- fix_year(new_year = 2022, home_waste$Date[home_waste$Year == 2092])
+home_waste$Year <- year(home_waste$Date)
+
+write.xlsx(home_waste, "./Data/home_waste.xlsx")
+```
+
+```{r}
+## recodage des modalités de type waste dans home_waste
+
+home_waste <- home_waste %>% 
+  mutate(
+waste_type = case_when(waste_type == "Evacuation d'eau"~"water drain",
+                       waste_type == "Grand déchet"~"solid waste",
+                       waste_type == "Petit déchet"~"solid waste",
+                       waste_type == "Pneu"~"tire waste",
+                       waste_type == "Réserve d'eau de négligence"~"sewage deposit",
+                       waste_type == "Réserve volontaire d'eau"~"sewage deposit",
+                       waste_type == "Inconnu"~"other"
+           )
+)
+table(home_waste$waste_type)
+```
+
+```{r}
+home_waste_sf <- st_as_sf(home_waste, coords = c("X", "Y"),
+                            crs= "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0")
+
+home_waste_sf <- st_transform(home_waste_sf, crs = st_crs(myt_map))
+home_waste_sf <- bind_cols(home_waste_sf, st_coordinates(home_waste_sf))
+
+mapof_waste_nuimber <- myt_map_commune %>% 
+  ggplot() + geom_sf() + geom_sf_text(aes(label = commune), size = 1.5) + 
+  geom_point(data = home_waste_sf, aes(X, Y, col = waste_type)) + 
+  # scale_color_gradient2(low = "green", mid = "orange", high = "red", midpoint = 50) + 
+  xlab("Longitude") + ylab("Latitude") + 
+  facet_wrap(~Year) + theme_map()
+
+mapof_waste_nuimber$labels$colour <- "Waste type"
+mapof_waste_nuimber
+
+ggsave("./1. Egg_Resuls/map_of_wastes_type_myt.pdf", width = 7, height = 7)
+```
+
+```{r}
+home_waste %>% 
+  split(., .$Year) %>% lapply(function(x){
+  x$commune %>% unique() %>% na.omit() %>% length()
+})
+```
+
+We can assume that the two missing communes in 2019 had the same waste quantity in 2020. That is, we can get rid of the the missing waste data when merging it to the climate data.
+
+```{r}
+# identifying the communes that are missing in 2019
+com_all <- home_waste %>% 
+  split(., .$Year) %>% lapply(function(x){
+  x$commune %>% unique() %>% sort()
+}) 
+
+all_communes <- unique(myt_map$commune) %>% sort()
+
+com_2019 <- com_all$`2019`
+com_2021 <- com_all$`2021`
+
+miss_com2019 <- com_all$`2020`[!com_all$`2020` %in% com_2019]
+miss_com2021 <- com_all$`2020`[!com_all$`2020` %in% com_2021]
+
+# getting information from 2020
+miss_com2019_data2020 <- home_waste %>% 
+  filter(commune %in% miss_com2019, Year == 2020) %>% 
+  mutate(Date = fix_year(2019, Date),
+         Year = 2019)
+# getting information from 2020
+miss_com21_data2020 <- home_waste %>% 
+  filter(commune %in% miss_com2021, Year == 2020) %>% 
+  mutate(Date = fix_year(2021, Date),
+         Year = 2021)
+
+total_waste_df <- bind_rows(home_waste, miss_com2019_data2020, miss_com21_data2020) %>% 
+  fill(Date)
+
+# checking
+total_waste_df  %>% 
+  split(., .$Year) %>% lapply(function(x){
+  x$commune %>% unique() %>% sort() %>% length()
+})
+
+# count of missing values
+colMeans(is.na(total_waste_df))
+
+write.xlsx(total_waste_df, paste0(output_path, "total_waste_data.xlsx"))
+
+
+total_waste_week <- total_waste_df %>% mutate(Week = week(Date)) %>% 
+  group_by(Year, Week, commune) %>% 
+  summarise(waste_number = sp_sum(waste_number), .groups = "drop")
+
+date_range <- data.frame(Date = seq.Date(as.Date("2019-01-01"),
+                                         as.Date("2021-12-21"), by = "day")) %>% 
+  mutate(Year = year(Date),
+         Week = week(Date))
+
+all_communes
+week_df <- lapply(2019:2021, function(y){
+  df <- date_range %>% filter(Year == y) %>% dplyr::select(Year, Week) %>% unique()
+  df_commune <- lapply(all_communes, function(nc){
+    df$commune <- nc
+    df
+  }) %>% bind_rows()
+  
+  df_commune
+}) %>% bind_rows()
+
+total_waste_week <- week_df %>% full_join(total_waste_week, by = c("Week", "Year", "commune")) %>% 
+  fill(waste_number, .direction = "updown")
+
+
+total_waste_week %>% split(., .$Year) %>% 
+  lapply(function(x){
+    table(x$Week) %>% length()
+  })
+
+write.xlsx(total_waste_week, paste0(output_path, "total_waste_week.xlsx"))
+```
+
+## Weekly distribution by week and by commune
+
+```{r}
+total_waste_week %>% filter(Year == 2019) %>% 
+  ggplot(aes(x = "", waste_number, col = commune)) + 
+  geom_boxplot() + facet_wrap(~commune, scales = "free")
+
+
+total_waste_week %>% filter(Year == 2020) %>% 
+  ggplot(aes(Week, waste_number, col = commune)) + 
+  geom_boxplot() + facet_wrap(~commune, scales = "free")
+
+
+total_waste_week %>% filter(Year == 2021) %>% 
+  ggplot(aes(Week, waste_number, col = commune)) + 
+  geom_boxplot() + facet_wrap(~commune, scales = "free")
+```
+
+```{r}
+# converting total_waste_df to sf data
+total_waste_dfsp <- st_as_sf(total_waste_df, coords = c("X", "Y"), 
+                         crs= "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0")
+
+total_waste_dfsp <- st_transform(total_waste_dfsp, crs = st_crs(myt_map))
+total_waste_dfsp <- bind_cols(total_waste_dfsp, st_coordinates(st_centroid(total_waste_dfsp$geometry)))
+
+# distribution of final waste data
+plotly::ggplotly(myt_map  %>% 
+  ggplot() + geom_sf(aes(fill = commune)) + 
+  geom_point(data = total_waste_dfsp, aes(X, Y)) + 
+  facet_wrap(~ Year)  
+  )
+ggsave("./1. Egg_Resuls/total_waste_distribution.png", width = 11)
+```
+
+## Distribution of mosquito eggs 2019
+
+```{r}
+p_path <- "./Data/Data-Analysis-Mosquito/Cleaning-data/"
+
+pondoirs2019 <- read.xlsx(paste0(p_path, "tpondoirs19.xlsx"), sheet = "Data") %>% 
+  dplyr::select(Date = Installation_date, Week, commune = Communes, village = Villages, 
+         Latitude, Longitude, Num_eggs = Number, Environment,Trap) %>% 
+  mutate(Date = ymd(Date),
+         Date = fix_year(2019, Date),
+         Week = as.numeric(Week),
+         Year = year(Date),
+         commune2 = toupper(commune),
+         Month = lubridate::month(Date),
+         Num_eggs = as.numeric(Num_eggs),
+         Latitude = as.numeric(Latitude),
+         Longitude = as.numeric(Longitude)) %>% 
+  filter(!is.na(Latitude), !is.na(Longitude)) %>% unique() %>% 
+  group_by(Date, Year, Week, commune, commune2, village, Longitude, Latitude, Environment) %>% 
+  summarise(Num_eggs = sp_sum(Num_eggs),Trap=sp_func(Trap, max) , .groups = "drop")
+
+pondoirs2019$Latitude[pondoirs2019$Latitude > -12.6 & pondoirs2019$commune == "Sada"] <- -12.8503231
+
+write.xlsx(pondoirs2019, "./1. Egg_Resuls/pondoirs2019.xlsx")
+```
+
+
+## Distribution of mosquito eggs 2020
+
+```{r warning=FALSE, message=FALSE}
+pondoirs2020 <- read.csv(paste0(p_path, "tpondoirs2020.csv"), sep = ";",dec=",") %>% 
+  dplyr::select(Date = date.pose, Week=Semaine, commune, village, 
+         Latitude=Y, Longitude=X, Num_eggs = nombre) %>% 
+  mutate(Date = dmy(Date),
+         Week = as.numeric(Week),
+         Year = year(Date),
+        commune2 = toupper(gsub("Dzaoudzi /Labattoir","DZAOUDZI",commune)),
+         Month = lubridate::month(Date),
+         Num_eggs = as.numeric(Num_eggs),
+         Latitude = as.numeric(Latitude),
+         Longitude = as.numeric(gsub(",",".",Longitude))) %>% 
+  filter(!is.na(Latitude), !is.na(Longitude)) %>% unique() %>% 
+  group_by(Date, Year, Week, commune, commune2, village, Longitude, Latitude) %>% 
+  summarise(Num_eggs = sp_sum(Num_eggs), .groups = "drop")%>% filter(Year==2020)
+
+pondoirs2020$Latitude[pondoirs2020$Latitude < -100] <- pondoirs2020$Latitude[pondoirs2020$Latitude < -100]/1e6
+pondoirs2020$Longitude[pondoirs2020$Longitude < 0] <- seq(45.186777, 45.186785, le = length(pondoirs2020$Longitude[pondoirs2020$Longitude < 0]))
+min(pondoirs2020$Longitude)
+boxplot(pondoirs2020$Longitude)
+
+pondoirs2020$Latitude[pondoirs2020$Latitude > -12.2] <- -12.737140
+
+
+pondoirs2020 %>% filter(!is.na(Num_eggs), !is.na(Week)) %>% 
+  ggplot(aes(Week, Num_eggs)) + geom_col(position = "dodge") + #scale_x_date(date_labels = "%B") +
+  xlab("Week") + ylab("Number of eggs") + ggtitle("Weekly count of eggs in 2020") + theme_bw()
+
+ggsave("observation_oeufs_2020.png", width = 8, height = 6)
+
+pondoirs2020sf <- st_as_sf(pondoirs2020, coords = c("Longitude", "Latitude"), 
+                            crs= "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0")
+
+pondoirs2020sf <- st_transform(pondoirs2020sf, crs = st_crs(myt_map))
+pondoirs2020sf <- bind_cols(pondoirs2020sf, st_coordinates(st_centroid(pondoirs2020sf$geometry)))
+pondoirs2020sf$levels <- cut(pondoirs2020sf$Num_eggs, 5) %>% as.factor()
+
+write.xlsx(pondoirs2020, "./1. Egg_Resuls/pondoirs2020.xlsx")
+```
+
+```{r}
+ggplot(data = myt_map) + 
+  geom_sf() + 
+  geom_point(data = pondoirs2020sf, aes(X, Y, col = levels)) +
+  scale_color_manual("Nom", breaks = levels(pondoirs2020sf$levels), values = rainbow(length(unique(pondoirs2020sf$levels)))) +
+  xlab("Longitude") + ylab("Latitude") + ggtitle("Observation des oeufs en 2020")
+
+# ggsave("carto_pondoir_2020.png")
+```
+
+## Analysis of mosquitoes egg data for 2021
+
+```{r}
+pondoirs2021 <- read.xlsx("pondoirs2021.xlsx") %>% 
+  mutate(Date = as.Date(Date, origin = "1899-12-30"),
+         Latitude = -abs(Latitude))
+
+boxplot(pondoirs2021$Latitude)
+id_out <- which(pondoirs2021$Latitude < -14 | pondoirs2021$Latitude > -12.6)
+
+pondoirs2021$village[id_out]
+pondoirs2021$Latitude[id_out]
+
+
+# pondoirs2021$Latitude[
+#   pondoirs2021$Latitude == min(pondoirs2021$Latitude[id_out]) & pondoirs2021$village == "Kangani"
+#   ] <- mean(pondoirs2021$Latitude[pondoirs2021$village == "Kangani"])
+
+pondoirs2021$Latitude[
+  (pondoirs2021$Latitude < -14 | pondoirs2021$Latitude > -12.6) & 
+    pondoirs2021$village == "Kangani"] <- mean(pondoirs2021$Latitude[pondoirs2021$village == "Kangani"])
+
+pondoirs2021$Latitude[
+  (pondoirs2021$Latitude < -14 | pondoirs2021$Latitude > -12.7) & 
+    pondoirs2021$village == "Pamandzi"] <- mean(pondoirs2021$Latitude[pondoirs2021$village == "Pamandzi"])
+
+pondoirs2021$Latitude[
+  (pondoirs2021$Latitude < -14 | pondoirs2021$Latitude > -12.6) & 
+    pondoirs2021$village == "Koungou"] <- mean(pondoirs2021$Latitude[pondoirs2021$village == "Koungou"])
+
+
+pondoirs2021 %>% ggplot(aes(Longitude, Latitude)) + geom_point()
+```
+
+## Displaying points on the map to detect spatial outliers
+
+```{r}
+pondoirs2021sf <- st_as_sf(pondoirs2021, coords = c("Longitude", "Latitude"),
+                            crs= "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0")
+
+pondoirs2021sf <- st_transform(pondoirs2021sf, crs = st_crs(myt_map_commune))
+pondoirs2021sf <- bind_cols(pondoirs2021sf, st_coordinates(pondoirs2021sf))
+
+myt_map %>% ggplot() + geom_sf() + 
+  geom_point(data = pondoirs2021sf, aes(X, Y))
+```
+
+```{r}
+#  les donnees climatiques
+climate_data_tidy <- readxl::read_excel("climate_data_tidy.xlsx") %>% 
+  mutate(DWR = ifelse(RR == 0, 0, 1),
+         DWR2 = ifelse(RR == 0, 1, 0),
+         Week = week(DATE),
+         Year = year(DATE))
+
+head(climate_data_tidy)
+```
+
+### Merging pondoirs2019 data to total waste data to avoid the problem of missing communes
+
+Here we use the knn_match function find the nearest coordinates to our egg data.
+
+```{r}
+# weekly data
+cumul_week <- climate_data_tidy  %>% filter(Year == 2019) %>% data.frame() %>% 
+  group_by(Year, NAME, Week) %>% 
+  summarise(NDWR = comptage_0(DWR), 
+            Days_rain = comptage_0(DWR2),
+            Mean_TN = mean(TN),
+            Mean_TX = mean(TX),
+            Cum_RR = sum(RR),
+            .groups = "drop") %>% 
+  mutate(Week_lagged = Week + 1)
+
+cumul_week %>% filter(NAME == "ACOUA") %>% 
+  ggplot(aes(Week, Mean_TX)) + geom_line() + geom_point() + facet_wrap(~Year)
+```
+
+### Merging pondoirs2020 data to total waste data to avoid the problem of missing communes
+
+Here we use the knn_match function find the nearest coordinates to our egg data.
+
+```{r}
+# weekly data
+cumul_week20 <- climate_data_tidy  %>% filter(Year == 2020) %>% data.frame() %>% 
+  group_by(Year, NAME, Week) %>% 
+  summarise(NDWR = comptage_0(DWR), 
+            Days_rain = comptage_0(DWR2),
+            Mean_TN = mean(TN),
+            Mean_TX = mean(TX),
+            Cum_RR = sum(RR),
+            .groups = "drop") %>% 
+  mutate(Week_lagged = Week + 1)
+
+cumul_week20 %>% filter(NAME == "ACOUA") %>% 
+  ggplot(aes(Week, Mean_TX)) + geom_line() + geom_point()  + facet_wrap(~Year)
+```
+
+### Merging pondoirs2021 data to total waste data to avoid the problem of missing communes
+
+Here we use the knn_match function find the nearest coordinates to our egg data.
+
+```{r}
+# weekly data
+cumul_week21 <- climate_data_tidy  %>% filter(Year == 2021) %>% data.frame() %>% 
+  group_by(Year, NAME, Week) %>% 
+  summarise(NDWR = comptage_0(DWR), 
+            Days_rain = comptage_0(DWR2),
+            Mean_TN = mean(TN),
+            Mean_TX = mean(TX),
+            Cum_RR = sum(RR),
+            .groups = "drop") %>% 
+  mutate(Week_lagged = Week + 1)
+
+cumul_week21 %>% filter(NAME == "ACOUA") %>% 
+  ggplot(aes(Week, Mean_TX)) + geom_line() + facet_wrap(~Year)
+  
+```
+
+## Data collection sites
+
+```{r warning=FALSE, message=FALSE}
+eggdata <- bind_rows(
+  pondoirs2019, pondoirs2020, pondoirs2021 <- pondoirs2021 %>% mutate(Year = year(Date))
+)
+
+eggdata_sf <- st_as_sf(eggdata, coords = c("Longitude", "Latitude"),
+                       crs= "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0")
+
+eggdata_sf <- st_transform(eggdata_sf, crs = st_crs(myt_map))
+eggdata_sf <- bind_cols(eggdata_sf, st_coordinates(st_centroid(eggdata_sf$geometry)))
+
+# distribution of collecting site
+myt_map_commune %>% ggplot() + geom_sf() +
+  geom_point(data = eggdata_sf, aes(X, Y)) + facet_wrap(~Year) + theme_map()
+
+ggsave("./1. Egg_Resuls/Distribution_of_egg_collecting_sites.pdf", width = 10, height = 5)
+```
+
+Observe that the south is underrepresented in the data. The North-East area has much observations.
+
+### Weekly count of mosquitoes eggs
+
+```{r warning=FALSE, message=FALSE}
+# aggregating data weekly
+eggdata_weekly <- eggdata %>% filter(!is.na(Week)) %>% 
+  group_by(Year, commune = commune2, Week) %>% 
+  summarise(Num_eggs = sp_func(Num_eggs, sum), .groups = "drop") %>% 
+  arrange(Year, commune, Week)
+
+# weekly density/count of mosquitoes in Mayotte
+eggdata_weekly %>% 
+  ggplot(aes(Week, Num_eggs, fill = commune)) + geom_col() + ylab("Number of eggs") + 
+  facet_wrap(~Year, scales = "free_y", ncol = 1) + theme_minimal()
+
+ggsave("./1. Egg_Resuls/Weekly_Distribution_of_egg_collecting_sites.pdf", width = 12, height = 8)
+```
+
+Susceptible issue with data:
+-   Data is not evenly distributed in all the communes, i.e there was no data collection over some period of time in some places.
+
+-   The weekly average of mosquito count increases yearly which means mosquito population is increasing or the number of traps increased over the year in Mayotte.
+
+-   Fitting a model using all the data may bias the predictions because big figures will influence the LSE-based models such as GAM, LASSO etc.
+
+-   Data collection was done mostly performed in Koungou. Therefore, fitting a spatio-temporal model may be biased if data is not equally distributed (collection frequencies) in all spaces. A non-parametric method may work better because they are robust (no influenced by outliers)
+
+```{r}
+climate_week <- read_excel("climate_week.xlsx")
+pondoirs2019_week_lag <- pondoirs2019 %>% 
+  # mutate(Year = year(Date)) %>% filter(Year == 2019) %>% 
+  dplyr::select(Year, Week, commune, -commune, commune2, Num_eggs) %>% 
+  group_by(Year, Week, commune2) %>% 
+  summarise_if(is.numeric, list(function(x) sp_func(x, sum))) %>% 
+  full_join(climate_week %>% filter(Year == 2019), by = c("Year", "Week" = "Week_lagged", "commune2" = "NAME")) %>% 
+  mutate(Week = Week - 1) %>% filter(!is.na(Week), Week > 0)
+
+dim(pondoirs2019_week_lag %>% unique())
+
+write.xlsx(pondoirs2019_week_lag, "./1. Egg_Resuls/CleanedData/pondoirs2019_week_lag.xlsx")
+```
+
+```{r}
+pondoirs2020_week_lag <- pondoirs2020 %>% 
+  # mutate(Year = year(Date)) %>% filter(Year == 2019) %>% 
+  dplyr::select(Year, Week, commune, -commune, commune2, Num_eggs) %>% 
+  group_by(Year, Week, commune2) %>% 
+  summarise_if(is.numeric, list(function(x) sp_func(x, sum))) %>% 
+  full_join(climate_week %>% filter(Year == 2020), by = c("Year", "Week" = "Week_lagged", "commune2" = "NAME")) %>% 
+  mutate(Week = Week - 1) %>% filter(!is.na(Week), Week > 0)
+
+dim(pondoirs2020_week_lag %>% unique())
+```
+
+```{r}
+pondoirs2021_week_lag <- pondoirs2021 %>% mutate(Year = year(Date)) %>% 
+  dplyr::select(Year, Week, commune, -commune, commune2, Num_eggs) %>% 
+  group_by(Year, Week, commune2) %>% 
+  summarise_if(is.numeric, list(function(x) sp_func(x, sum))) %>% 
+  full_join(climate_week %>% filter(Year == 2021), by = c("Year", "Week" = "Week_lagged", "commune2" = "NAME")) %>% 
+  mutate(Week = Week - 1) %>% filter(!is.na(Week), Week > 0)
+
+dim(pondoirs2021_week_lag %>% unique())
+```
+
+```{r}
+# adding centroids for 2019
+pondoirs2019_week_lag <- myt_map_commune %>% mutate(commune2 = toupper(commune)) %>% 
+  left_join(pondoirs2019_week_lag, by = c("commune2" = "commune2"))
+pondoirs2019_week_lag <- bind_cols(pondoirs2019_week_lag, 
+                                   st_coordinates(st_centroid(pondoirs2019_week_lag$geometry))) %>% 
+  mutate(geometry = NULL) %>% data.frame() %>% unique() %>% 
+  dplyr::select(-c(OBJECTID:pop2012)) %>% 
+  filter(Week !=0) %>% dplyr::select(-Week.y)
+
+dim(pondoirs2019_week_lag)
+write.xlsx(pondoirs2019_week_lag, "./1. Egg_Resuls/CleanedData/pondoirs2019_week_lag.xlsx")
+```
+
+```{r}
+# adding centroids for 2020
+pondoirs2020_week_lag <- myt_map_commune %>% mutate(commune2 = toupper(commune)) %>% 
+  left_join(pondoirs2020_week_lag, by = c("commune2" = "commune2"))
+pondoirs2020_week_lag <- bind_cols(pondoirs2020_week_lag, 
+                              st_coordinates(st_centroid(pondoirs2020_week_lag$geometry))) %>% 
+  mutate(geometry = NULL) %>% data.frame() %>% unique() %>% 
+  dplyr::select(-c(OBJECTID:pop2012)) %>% 
+  filter(Week !=0) %>% dplyr::select(-Week.y)
+
+dim(pondoirs2020_week_lag)
+# sauvegarde de donnees imputées/predites
+write.xlsx(pondoirs2020_week_lag, "./1. Egg_Resuls/CleanedData/pondoirs2020_week_lag.xlsx")
+```
+
+```{r}
+# adding centroids for 2021
+pondoirs2021_week_lag <- myt_map_commune %>% mutate(commune2 = toupper(commune)) %>% 
+  left_join(pondoirs2021_week_lag, by = c("commune2" = "commune2"))
+pondoirs2021_week_lag <- bind_cols(pondoirs2021_week_lag, 
+                              st_coordinates(st_centroid(pondoirs2021_week_lag$geometry))) %>% 
+  mutate(geometry = NULL) %>% data.frame() %>% unique() %>% 
+  dplyr::select(-c(OBJECTID:pop2012)) %>% 
+  filter(Week !=0) %>% dplyr::select(-Week.y)
+
+dim(pondoirs2021_week_lag)
+write.xlsx(pondoirs2021_week_lag, "./1. Egg_Resuls/CleanedData/pondoirs2021_week_lag.xlsx")
+```
+
+## Adding weekly waste number to pondoirs 2019
+
+```{r}
+total_waste_df
+total_waste_week <- read.xlsx("./1. Egg_Resuls/CleanedData/total_waste_week.xlsx")
+```
+
+
+```{r}
+pondoirs2019_week_lag <- pondoirs2019_week_lag %>% left_join(total_waste_week, by = c("Year", "Week", "commune2" = "commune"))
+head(pondoirs2019_week_lag)
+write.xlsx(pondoirs2019_week_lag, "./1. Egg_Resuls/CleanedData/pondoirs2019_week_lag.xlsx")
+```
+
+## Adding weekly waste number to pondoirs 2020
+
+```{r}
+pondoirs2020_week_lag <- pondoirs2020_week_lag %>% left_join(total_waste_week, by = c("Year", "Week", "commune2" = "commune"))
+head(pondoirs2020_week_lag)
+write.xlsx(pondoirs2020_week_lag, "./1. Egg_Resuls/CleanedData/pondoirs2020_week_lag.xlsx")
+```
+
+## Adding weekly waste number to pondoirs 2021
+
+```{r}
+pondoirs2021_week_lag <- pondoirs2021_week_lag %>% 
+  left_join(total_waste_week, by = c("Year", "Week", "commune2" = "commune")) %>% 
+  filter(!is.na(waste_number))
+
+head(pondoirs2021_week_lag)
+
+# sauvegarde de donnees imputées/predites
+write.xlsx(pondoirs2021_week_lag, "./1. Egg_Resuls/CleanedData/pondoirs2021_week_lag.xlsx")
+```
+
+
+## Fusion
+
+```{r}
+eggdata_weekly_cl <- bind_rows(pondoirs2019_week_lag, pondoirs2020_week_lag, pondoirs2021_week_lag)
+```
+
+## IDW method for missing data imputing pondoirs
+
+```{r}
+cvbls_all <- c("X", "Y", "Year", "Week", "RR_cum7", "Mean_TN", "Mean_TX", "Days_with_rain", "waste_number")
+cvbls <- c("X", "Y", "Week", "RR_cum7", "Mean_TN", "Mean_TX", "Days_with_rain", "waste_number")
+
+```
+
+
+
+
+### Checking for outliers
+
+```{r}
+eggdata_weekly_cl %>% filter(!is.na(Num_eggs)) %>% 
+  ggplot(aes(commune2, Num_eggs)) + geom_boxplot() + coord_flip() + 
+  facet_wrap(~Year, scales = "free_x") + xlab("Commune") + ylab("Number of mosquito eggs")
+ggsave("./1. Egg_Resuls/outliers_detection_eggdata.pdf")
+```
+
+We oberve that there exist outliers in the distribution of mosquito egg count in Koungou.
+
+```{r}
+# apply the function above to all communes
+eggdata_weekly_cl <- eggdata_weekly_cl %>% split(., .$Year) %>% 
+  lapply(function(yd){
+    yd %>% split(., .$commune2) %>% lapply(function(x){
+      x$Num_eggs <- correct_outliers(x$Num_eggs)
+      x
+    }) %>% bind_rows()
+  }) %>% bind_rows()
+
+# checking for outliers again
+eggdata_weekly_cl %>% filter(!is.na(Num_eggs)) %>% 
+  ggplot(aes(commune2, Num_eggs)) + geom_boxplot() + coord_flip() + 
+  facet_wrap(~Year, scales = "free_x") + xlab("Commune") + ylab("Number of mosquito eggs")
+ggsave("./1. Egg_Resuls/outliers_detection_eggdata_outliers_free.pdf")
+```
+
+## GAM predictions
+```{r}
+eggdata_weekly_cl=read_excel("./1. Egg_Resuls/CleanedData/eggdata_weekly_cl_updated.xlsx")
+
+```
+
+```{r}
+train_df <- eggdata_weekly_cl %>% filter(!is.na(Num_eggs))
+f <- Num_eggs ~ Year + Days_with_rain + s(X, k=12, bs = 'cs') + s(waste_number, k=15, bs = 'cs') + s(X,waste_number, k = 12) + s(Week, k=15, bs = 'cs') + s(RR_cum7, k=5, bs = 'cs') + s(Mean_TN, k=5, bs = 'cs') + s(RR_cum7, Week, k = 12)
+
+fbis <- Num_eggs ~ Year + Days_with_rain + s(X, k=12, bs = 'cs') + s(Week, k=15, bs = 'cs') + s(RR_cum7, k=5, bs = 'cs') + s(Mean_TN, k=5, bs = 'cs')
+
+f2 <- Num_eggs ~ Year + Days_with_rain + s(X) + s(Week, bs = 'cs') + s(RR_cum7, bs = 'cs') + s(Mean_TN, bs = 'cs')
+
+f3 <- Num_eggs ~ Year + Days_with_rain + lo(X) + lo(Week) + lo(RR_cum7) + lo(Mean_TN)
+
+
+gam_model <- mgcv::gam(f, data = train_df, family = "poisson", method = "REML", gamma = 9)
+plot(gam_model, page = 1)
+summary(gam_model)
+gam.check(gam_model)
+coef(gam_model)
+
+
+gam_model2 <- mgcv::gam(f2, data = train_df, family = "poisson", method = "REML", gamma = 9)
+anova(gam_model, gam_model2, test = "Chisq")
+
+summary(gam_model)
+# coef(gam_model)
+```
+
+```{r}
+tt <- seq(1, 10, by = 1)
+
+negbin_models <- lapply(tt, function(t){
+  nb_model <- mgcv::gam(f, data = train_df, family = negbin(theta = t), method = "REML")
+  a <- summary(nb_model)$r.sq
+  list(model = nb_model, r.sq = a)
+})
+
+# accuracy rates of all negative binomial models
+nb_accuracies <- negbin_models %>% sapply(function(x) x$r.sq)
+
+pdf("./1. Egg_Resuls/accurate_param_nb_model.pdf", width = 7, height = 4)
+plot(nb_accuracies ~ tt, type = "b", 
+     col = as.factor(nb_accuracies == max(nb_accuracies)), 
+     pch = 16, bty = "l", xlab = expression(theta), ylab = "Accuracy rate") 
+abline(v = which.max(nb_accuracies), col = "red", lty = 2)
+dev.off()
+
+theta_best <- tt[which.max(nb_accuracies)]
+best_model <- negbin_models[[theta_best]]$model
+best_model2 <- mgcv::gam(fbis, data = train_df, family = negbin(theta = theta_best), method = "REML")
+summary(best_model)
+coef(best_model)
+gam.check(best_model)
+
+eggdata_weekly_cl$Num_eggs_NB <- exp(predict(best_model, eggdata_weekly_cl))
+```
+
+```{r}
+# rf_model <- train(f2, data = train_df, method = "gam", family = "poisson", trControl = trainControl(method="LOOCV"))
+# summary(rf_model$finalModel)
+
+eggdata_weekly_cl$Num_eggs_GAM <- exp(predict(gam_model, eggdata_weekly_cl))
+
+eggdata_weekly_cl$Num_eggs_GAM2 <- exp(predict(gam_model2, eggdata_weekly_cl))
+summary(gam_model)
+summary(eggdata_weekly_cl$Num_eggs_GAM)
+
+eggdata_weekly_cl %>% filter(!is.na(Num_eggs)) %>% 
+  ggplot(aes(Num_eggs, Num_eggs_GAM)) + geom_point() + 
+  xlab("Number of mosquito eggs") + 
+  ylab("Fitted number of mosquito eggs")
+
+
+eggdata_weekly_cl %>% filter(commune2 == "KOUNGOU") %>% 
+  ggplot() + geom_line(aes(Week, Num_eggs_GAM), col = "red") + 
+  geom_line(aes(Week, Num_eggs_GAM2), col = "blue")+
+xlab("Week") + 
+  ylab("Fitted (red)  vs Observed (blue) mosquito")
+  
+```
+
+## Comparison
+```{r}
+eggdata_weekly_cl%>%filter(!is.na(Num_eggs)) %>%filter(Year!=2022) %>%ggplot(aes(Week,Num_eggs,col="observed")) + geom_line(aes(Week, Num_eggs_GAM,col="fitted")) + geom_line()  + facet_wrap(~Year)
+```
+
+
+##Predictions
+
+##Ratio=max
+```{r}
+get_ratio <- function(x, method = 1, threshold = NULL){
+  n <- length(x)
+  
+  if (is.null(threshold)) threshold = max(x)
+  
+  if (n <= 1) {
+      stop("x should be of length greater than 1!")
+    } else {
+    return(ifelse(x <= threshold, (x-min(x))/(threshold-min(x)), 1))
+  }
+}
+
+plot(get_ratio(1:10, threshold = NULL))
+```
+
+```{r}
+myt_map_commune$commune2=toupper(myt_map_commune$commune)
+eggdata_weekly_cl2 <- myt_map_commune %>% select(commune2) %>% left_join(eggdata_weekly_cl , by = "commune2") %>% 
+  mutate(Ratio = get_ratio(Num_eggs_GAM, threshold = 2000))
+```
+
+  
+
+```{r}
+lapply(2019, function(year){
+  p <- eggdata_weekly_cl2%>% filter(Year == year) %>%filter(Week %in% 1:52) %>% ggplot() + geom_sf(aes(fill = Ratio)) + theme_map() + facet_wrap(~Week, nrow = 5) + 
+scale_fill_gradient2(low = "green", mid = "orange", high = "red", midpoint = 0.5)
+    p
+})
+```
+
+
+##Attention tm_layout au lieu de ttm
+```{r warning=FALSE, message=FALSE}
+library(tmap)
+lapply(2020, function(year){
+  tm_object <- tm_shape(eggdata_weekly_cl2 %>% filter(Year == year)) +
+    tm_polygons(col = "Ratio", midpoint = 0.6, title = paste0("Ratio\n(", year, ")"), palette = "seq") +
+    tm_layout(aes.palette = list(seq = "-RdYlGn")) +
+    tm_facets(by = "Week")
+  tm_object
+})
+```
+
+```{r}
+# training_RMSE <- eggdata_weekly_cl %>% filter(!is.na(Num_eggs)) %>%
+#   summarise(
+#      GAMPOIS = sqrt(mean((Num_eggs - Num_eggs_GAM)^2)),
+#              #GAMNBIN = sqrt(mean((Num_eggs - Num_eggs_NB)^2)),
+#            # IDW = sqrt(mean((Num_eggs - Num_eggs_IDW)^2)),
+#             #IDWGAUSS = sqrt(mean((Num_eggs - Num_eggs_IDW_gauss)^2))
+#             )
+# 
+# recap_table <- data.frame(
+#   RMSE = training_RMSE %>% as.numeric() %>% round(3)
+# )
+```
