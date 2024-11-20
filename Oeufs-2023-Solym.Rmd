@@ -19,11 +19,6 @@ source("Utilities.R")
 library(RColorBrewer)
 ```
 
-## A faire
-
-1.  Modele spatio temporelle sur les donnees de dechet puis les ajouter aux donnees de pondoire
-
-**Idea:** Be able to merge waste data with the
 
 ## Importing waste data
 
@@ -105,7 +100,7 @@ write.xlsx(home_waste, "./Data/home_waste.xlsx")
 ```
 
 ```{r}
-## recodage des modalités de type waste dans home_waste
+## recoding in home_waste
 
 home_waste <- home_waste %>% 
   mutate(
@@ -621,7 +616,7 @@ write.xlsx(pondoirs2021_week_lag, "./1. Egg_Resuls/CleanedData/pondoirs2021_week
 ```
 
 
-## Fusion
+## Merging
 
 ```{r}
 eggdata_weekly_cl <- bind_rows(pondoirs2019_week_lag, pondoirs2020_week_lag, pondoirs2021_week_lag)
@@ -791,8 +786,6 @@ scale_fill_gradient2(low = "green", mid = "orange", high = "red", midpoint = 0.5
 })
 ```
 
-
-##Attention tm_layout au lieu de ttm
 ```{r warning=FALSE, message=FALSE}
 library(tmap)
 lapply(2020, function(year){
